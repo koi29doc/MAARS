@@ -1,0 +1,188 @@
+---
+title: "MAARS_Clustering" on AD_LES vs AD_NON_LES vs CTRL
+output: html_document
+---
+
+
+Import files
+```{r}
+trans_MAARS <- read.table("/Users/alain_lu/Dropbox/These_de_science/Data/Unprocessed/MAARS_normTranscriptome_618samples_16042014.txt", header = T, sep = "\t") # Import transcriptomic data
+clin_MAARS <- read.csv2("/Users/alain_lu/Dropbox/These_de_science/Data/Unprocessed/descriptionFile140414.csv", header = TRUE, sep = "\t") # Import whole patients clinical data
+ensembl2gene <- read.table("/Users/alain_lu/Dropbox/These_de_science/Data/Unprocessed/ensembl2gene.txt", h = TRUE, sep = ",",row.names = 1) # Import annotation data Esemble gene
+```
+
+Required library
+
+```{r}
+library(anyLib) # this library check for libraries presence, load them, or install them if they are not already installed
+anyLib::anyLib(c("EMA",
+                 "gridGraphics",
+                 "grid",
+                 "summarytools",
+                 "ggplot2",
+                 "reshape2",
+                 "gplots", 
+                 "RColorBrewer",
+                 "ComplexHeatmap",
+                 "igraph",
+                 "RCy3",
+                 "ape",
+                 "network",
+                 "plotly", 
+                 "circlize",
+))
+
+## Verifier si toutes ces libraries sont utiles ##
+library(ade4)
+library(affy)
+```
+
+
+Filter genes 
+```{r}
+# Discard probes with signal close to background level
+trans_MAARS <- EMA::expFilter(as.matrix(trans_MAARS), threshold = 5, p = 1/ncol(trans_MAARS)) # filter totally low expressed genes threshold < 5
+density_expr_filted_trans_MAARS <- density(as.matrix(trans_MAARS))
+plot(density_expr_filted_trans_MAARS, main = "Distribution of normalized and filtered gene expression levels (> 5)", xlab = "log2 expression levels") + abline(v = mean(as.matrix(trans_MAARS)), col = "red") + abline(v = median(as.matrix(trans_MAARS)), col = "blue")  # Distribution of gene expression after filtering
+dim(trans_MAARS)
+# write.table(trans_MAARS,"/Users/alain_lu/Dropbox/These_de_science/Data/Processed/Quality_control/expr_filtred_5_trans_MAARS.txt")
+
+# Discard genes with low variability
+non_const_expr_filtred_trans_MAARS <- genes.selection(trans_MAARS, thres.diff = 1.5, probs = 1/ncol(trans_MAARS))
+density_trans_MAARS <- density(as.matrix(trans_MAARS[non_const_expr_filtred_trans_MAARS, ]))
+plot(density_trans_MAARS, main = "Distribution of non-constant, normalized and filtered gene expression levels (> 5)", xlab = "log2 expression levels") + abline(v = mean(trans_MAARS[non_const_expr_filtred_trans_MAARS,]), col = "red") + abline(v = median(trans_MAARS[non_const_expr_filtred_trans_MAARS,]), col = "blue")
+dim(as.matrix(trans_MAARS[non_const_expr_filtred_trans_MAARS,]))
+# write.table(expr_filtred_trans_MAARS[non_const_expr_filtred_trans_MAARS,],"/Users/alain_lu/Dropbox/These_de_science/Data/Processed/Quality_control/non_const_expr_filtred_5_trans_MAARS.txt")
+```
+
+
+Formatting data sets
+```{r}
+# Formatting clinical data sel
+rownames(clin_MAARS) <- clin_MAARS[,"sample_id"] # Change rownames for sample_id
+status <- paste(clin_MAARS[,"clinical_group"],clin_MAARS[,"lesional"],sep="_")
+status <- gsub("CTRL_NON_LES","CTRL",status)
+status <- as.matrix(status)
+rownames(status) <- rownames(clin_MAARS)
+clin_MAARS <- cbind(clin_MAARS, status)
+
+# Formating expression data set Suppression of _at postfix with str_replace_all function stringr package
+library("stringr", lib.loc="/Library/Frameworks/R.framework/Versions/3.5/Resources/library")
+row.names(trans_MAARS) <- str_replace_all(string = row.names(trans_MAARS), pattern = "_at", replacement = "")
+head(row.names(trans_MAARS)) # Visual check
+
+# Check for lack of duplicate in the row name by comparing lenght of unique row names and full dataset row length
+length(unique(rownames(trans_MAARS)))
+```
+
+Filters patient with prosirais
+
+```{r}
+trans_MAARS <- trans_MAARS[ ,!clin_MAARS$clinical_group == "PSO"] # exclude patients with psoriasis
+
+#CTRL_id_clin_MAARS <- rownames(clin_MAARS[clin_MAARS$status == "CTRL", ])
+
+```
+
+Creating matrix with gene sympbols
+```{r}
+# Create annotation matrix
+gene2ensembl <- matrix(NA,nrow = nrow(ensembl2gene),ncol=1)
+rownames(gene2ensembl) <- ensembl2gene[,1]
+gene2ensembl[,1] <- rownames(ensembl2gene)
+head(gene2ensembl) # visual check
+
+# Replace ens annotation with symbols ID
+trans_MAARS <- trans_MAARS[rownames(trans_MAARS) %in% gene2ensembl[ ,1], ]
+gene2ensembl <- cbind(gene2ensembl,rownames(gene2ensembl))
+gene2ensembl <- gene2ensembl[gene2ensembl[ ,1] %in% rownames(trans_MAARS), ]
+rownames(trans_MAARS) <- rownames(gene2ensembl)
+```
+
+
+Data representation and clustering with Complexheatmap (Documentation : https://jokergoo.github.io/ComplexHeatmap-reference/book/)
+```{r}
+col <- colorRamp2(c(0, 6, 12), c("green", "black", "red")) # Coloration function for Complexheatmap
+
+# Clustering by raws and columns
+Heatmap(na.omit(trans_MAARS),
+        name = "Intensity", column_title = "Samples", 
+        col=col,
+        cluster_rows = FALSE,
+        cluster_columns = TRUE,
+        show_row_names = FALSE,
+        show_column_names = FALSE, 
+        row_title = "Genes", 
+)
+
+## POURQUOI LES GENES REPRESENTES SONT ILS AUSSI PEU VARIANTS
+
+```
+
+Kmeans classification in Euclidian distance
+
+```{r}
+d <- dist(na.omit(trans_MAARS), method = 'euclidean')
+kgroups <- kmeans(d, 10) # K mean clustering in 10 groups
+
+# Heatmap
+Heatmap(na.omit(trans_MAARS)[names(sort(kgroups$cluster)), ],
+        cluster_rows = FALSE,
+        cluster_columns = TRUE,
+        name = "Intensity", column_title = "Samples", 
+        col=col,
+        show_row_names = FALSE,
+        show_column_names = FALSE,
+        row_split = LETTERS[sort(kgroups$cluster)]
+)
+```
+
+Kmeans + correlation distance
+```{r}
+d <- 1-cor(t(na.omit(trans_MAARS))) # Correlation matrix
+kgroups <- kmeans(d, 3) # use regroupment algorythm
+
+Heatmap(na.omit(trans_MAARS)[names(sort(kgroups$cluster)), ],
+        cluster_rows = FALSE,
+        cluster_columns = TRUE,
+        name = "Intensity", column_title = "Conditions", 
+        col=col,
+        show_row_names = FALSE,
+        show_column_names = FALSE,
+        row_split = LETTERS[sort(kgroups$cluster)]
+)
+
+
+```
+
+
+#-------------------------------------------------------------------------------
+# Classification par hclust (méthode HCL)
+#-------------------------------------------------------------------------------
+
+
+```{r}
+trans_MAARS <- na.omit(trans_MAARS) # Exclude missing data
+
+# hclust + euclidienne
+Heatmap(trans_MAARS,
+        cluster_rows = function(m) hclust(dist(m, method="euclidean"), method ="average"),
+        cluster_columns = FALSE,
+        name = "Intensity", column_title = "Conditions", 
+        row_title = "Genes",
+        col=col,
+        show_row_names = FALSE)
+
+# hclust + 1- cor (err)
+Heatmap(expDataClean,
+        cluster_rows = function(m) hclust(as.dist(1 - cor(t(m))), method ="average"),
+        cluster_columns = FALSE,
+        name = "Intensity", column_title = "Conditions", 
+        row_title = "Genes",
+        col=col,
+        show_row_names = FALSE)
+```
+
+
+
+
